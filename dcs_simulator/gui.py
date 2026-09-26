@@ -25,6 +25,7 @@ import threading
 
 import numpy as np
 from scipy.io import loadmat, savemat
+from scipy.optimize import curve_fit
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -539,6 +540,118 @@ def calculate_dynamic_g1(
 
 
 # ============================================================
+# TEMPORARY PHYSICAL REFERENCE FIT
+# ============================================================
+
+def _double_exponential_reference(
+    tau_us,
+    amplitude_1,
+    decay_1,
+    amplitude_2,
+    decay_2,
+):
+    """
+    Exploratory representative curve used only by GUI Tab 1.
+
+    g2(tau) = 1 + A1 exp(-k1 tau) + A2 exp(-k2 tau)
+
+    This is a temporary visual/reference fit from the raw physical
+    trials for the selected condition. It is not the final ground truth.
+    """
+    return (
+        1.0
+        + amplitude_1 * np.exp(-decay_1 * tau_us)
+        + amplitude_2 * np.exp(-decay_2 * tau_us)
+    )
+
+
+def fit_temporary_physical_reference(curves):
+    """
+    Fit one double-exponential representative curve directly to all
+    raw physical trials. The trials are NOT averaged before fitting.
+
+    Parameters
+    ----------
+    curves : array-like, shape (n_trials, 501)
+
+    Returns
+    -------
+    fitted_curve : ndarray, shape (501,)
+    parameters : ndarray, shape (4,)
+    fit_rmse : float
+        RMSE between the fitted curve and all raw physical points.
+    """
+    curves = np.asarray(curves, dtype=float)
+
+    if curves.ndim != 2:
+        raise ValueError(
+            "Expected physical trial curves with shape (n_trials, 501)."
+        )
+
+    if curves.shape[1] != len(TAU_US):
+        if curves.shape[0] == len(TAU_US):
+            curves = curves.T
+        else:
+            raise ValueError(
+                f"Unexpected physical trial shape: {curves.shape}"
+            )
+
+    n_trials = curves.shape[0]
+    x = np.tile(TAU_US, n_trials)
+    y = curves.reshape(-1)
+
+    valid = np.isfinite(x) & np.isfinite(y)
+    x = x[valid]
+    y = y[valid]
+
+    if len(y) == 0:
+        raise ValueError("Physical reference contains no finite g2 values.")
+
+    initial_amplitude = max(
+        float(np.median(curves[:, 0]) - 1.0),
+        0.01,
+    )
+
+    initial_guess = [
+        initial_amplitude * 0.6,
+        0.01,
+        initial_amplitude * 0.4,
+        0.001,
+    ]
+
+    parameters, _ = curve_fit(
+        _double_exponential_reference,
+        x,
+        y,
+        p0=initial_guess,
+        bounds=(
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ),
+        maxfev=100000,
+    )
+
+    fitted_curve = _double_exponential_reference(
+        TAU_US,
+        *parameters,
+    )
+
+    fitted_all = np.tile(fitted_curve, n_trials)
+    raw_all = curves.reshape(-1)
+    finite_pair = np.isfinite(raw_all) & np.isfinite(fitted_all)
+
+    fit_rmse = float(
+        np.sqrt(
+            np.mean(
+                (fitted_all[finite_pair] - raw_all[finite_pair]) ** 2
+            )
+        )
+    )
+
+    return fitted_curve, parameters, fit_rmse
+
+
+# ============================================================
 # RUN VALIDATION
 # ============================================================
 
@@ -549,9 +662,12 @@ def run_validation(
     """
     Compare:
       1) Proposed model (this project)
-      2) Baseline pathlength model
-      3) Physical reference
+      2) Baseline pathlength model (older teammate comparison)
+      3) Temporary physical reference fitted directly from raw trials
     for one known reference condition.
+
+    The temporary physical fit is for GUI demonstration only and is
+    not treated as the final project ground truth.
     """
 
     shallow_flow = float(shallow_flow)
@@ -588,7 +704,14 @@ def run_validation(
     all_baseline_errors = []
 
     for sds_cm in (1, 2, 3):
-        reference_g2 = reference["g2"][sds_cm]["mean"]
+        physical_trials = reference["g2"][sds_cm]["trials"]
+
+        (
+            reference_g2,
+            physical_fit_parameters,
+            physical_fit_rmse,
+        ) = fit_temporary_physical_reference(physical_trials)
+
         beta = float(reference_g2[0] - 1.0)
 
         # Proposed model
@@ -646,6 +769,9 @@ def run_validation(
             "generated_g2": generated_g2,
             "baseline_g2": baseline_g2,
             "reference_g2": reference_g2,
+            "physical_trials": physical_trials,
+            "physical_fit_parameters": physical_fit_parameters,
+            "physical_fit_rmse": physical_fit_rmse,
             "mae": proposed_mae,
             "rmse": proposed_rmse,
             "max_error": proposed_max_error,
@@ -800,14 +926,14 @@ class DCSSimulatorGUI:
         self.notebook.add(self.validation_tab, text="Model Validation")
         self.notebook.add(self.human_tab, text="Human Dataset Generator")
 
-        self.validation_mode_button = ModeTab(self.mode_slots[0], "Model Validation", lambda: self._switch_mode(0), selected=False)
-        self.human_mode_button = ModeTab(self.mode_slots[1], "Human Dataset Generator", lambda: self._switch_mode(1), selected=True)
+        self.validation_mode_button = ModeTab(self.mode_slots[0], "Model Validation", lambda: self._switch_mode(0), selected=True)
+        self.human_mode_button = ModeTab(self.mode_slots[1], "Human Dataset Generator", lambda: self._switch_mode(1), selected=False)
         self.validation_mode_button.place(relx=.5, rely=.5, anchor='center')
         self.human_mode_button.place(relx=.5, rely=.5, anchor='center')
 
         self.build_validation_tab()
         self.build_human_tab()
-        self._switch_mode(1)
+        self._switch_mode(0)
 
     # ========================================================
     # STYLE / COMPONENT HELPERS
@@ -1013,7 +1139,7 @@ class DCSSimulatorGUI:
         self._title(intro, "Model Validation", 19)
         self._body(
             intro,
-            "Compare the proposed DCS model with a baseline model and physical reference measurements.",
+            "Compare the proposed DCS model and baseline model against a temporary fit from raw physical measurements.",
             wrap=285,
         )
 
@@ -1109,7 +1235,7 @@ class DCSSimulatorGUI:
 
         tk.Label(
             graph_head,
-            text="Proposed vs Baseline vs Physical Reference",
+            text="Proposed vs Baseline vs Temporary Physical Fit",
             bg=c["surface"],
             fg=c["text"],
             font=("Segoe UI Semibold", 14),
@@ -1426,28 +1552,62 @@ class DCSSimulatorGUI:
             generated = results[sds_cm]["generated_g2"]
             baseline = results[sds_cm]["baseline_g2"]
             reference = results[sds_cm]["reference_g2"]
+            physical_trials = np.asarray(
+                results[sds_cm]["physical_trials"],
+                dtype=float,
+            )
+
+            # Show the original physical measurements behind the fitted curve.
+            # All raw trials use one quiet visual style so the model/reference
+            # curves remain easy to compare.
+            for trial_index, raw_curve in enumerate(physical_trials):
+                if view == "All":
+                    raw_label = (
+                        f"Physical Raw SDS {sds_cm} cm"
+                        if trial_index == 0
+                        else None
+                    )
+                else:
+                    raw_label = (
+                        "Physical Raw Trials"
+                        if trial_index == 0
+                        else None
+                    )
+
+                self.validation_axis.plot(
+                    TAU_US,
+                    raw_curve,
+                    color="#9AA3B2",
+                    linewidth=1.1,
+                    alpha=0.48,
+                    label=raw_label,
+                    zorder=1,
+                )
 
             self.validation_axis.plot(
                 TAU_US,
                 generated,
-                linewidth=2.0,
+                linewidth=2.2,
                 label=f"Proposed SDS {sds_cm} cm",
+                zorder=4,
             )
 
             self.validation_axis.plot(
                 TAU_US,
                 baseline,
                 linestyle=":",
-                linewidth=2.0,
+                linewidth=2.2,
                 label=f"Baseline SDS {sds_cm} cm",
+                zorder=3,
             )
 
             self.validation_axis.plot(
                 TAU_US,
                 reference,
                 linestyle="--",
-                linewidth=2.0,
-                label=f"Physical Reference SDS {sds_cm} cm",
+                linewidth=2.6,
+                label=f"Temporary Physical Fit SDS {sds_cm} cm",
+                zorder=5,
             )
 
         self.validation_axis.set_xlabel(
@@ -1464,7 +1624,7 @@ class DCSSimulatorGUI:
             view_title = f"SDS {view}"
 
         self.validation_axis.set_title(
-            f"{view_title}\\n"
+            f"{view_title}\n"
             f"Shallow = {shallow_flow:g}, "
             f"Deep = {deep_flow:g}"
         )
