@@ -92,7 +92,9 @@ SDS_MM = np.array(
 #
 # 1 ml/min/100g  <->  1e-6 mm^2/s alpha*Db
 
-FLOW_TO_ALPHA_DB = 1e-6
+FLOW_TO_ALPHA_DB = 0.4e-6
+
+
 
 ALPHA_DB_SHALLOW_MM2_S = (
     SHALLOW_FLOW_ML_MIN_100G * FLOW_TO_ALPHA_DB

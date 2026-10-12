@@ -257,7 +257,9 @@ DETP_FILE = (
 # MODEL SETTINGS
 # ============================================================
 
-FLOW_TO_ALPHA_DB_SCALE = 1e-6
+from parameters import FLOW_TO_ALPHA_DB
+
+FLOW_TO_ALPHA_DB_SCALE = FLOW_TO_ALPHA_DB
 
 TAU_US = np.arange(
     0,
@@ -712,6 +714,8 @@ def run_validation(
             physical_fit_rmse,
         ) = fit_temporary_physical_reference(physical_trials)
 
+        # Keep the existing beta convention for now; this is estimated from
+        # the fitted physical reference and is NOT independent calibration.
         beta = float(reference_g2[0] - 1.0)
 
         # Proposed model
@@ -740,8 +744,22 @@ def run_validation(
             beta=beta,
         )
 
-        proposed_error = generated_g2 - reference_g2
-        baseline_error = baseline_g2 - reference_g2
+        # Validation uses every RAW physical trial, not the fitted display curve.
+        # Shape: (n_trials, n_tau); one generated curve is compared to each trial.
+        raw_trials = np.asarray(physical_trials, dtype=float)
+        if raw_trials.ndim != 2:
+            raise ValueError(f"Expected 2D physical trials, got {raw_trials.shape}")
+        if raw_trials.shape[1] != len(TAU_US):
+            if raw_trials.shape[0] == len(TAU_US):
+                raw_trials = raw_trials.T
+            else:
+                raise ValueError(f"Unexpected physical trial shape: {raw_trials.shape}")
+        proposed_error = generated_g2[np.newaxis, :] - raw_trials
+        baseline_error = baseline_g2[np.newaxis, :] - raw_trials
+        proposed_error = proposed_error[np.isfinite(proposed_error)]
+        baseline_error = baseline_error[np.isfinite(baseline_error)]
+        if proposed_error.size == 0 or baseline_error.size == 0:
+            raise ValueError("No finite raw physical g2 values to evaluate")
 
         proposed_mae = float(np.mean(np.abs(proposed_error)))
         proposed_rmse = float(np.sqrt(np.mean(proposed_error ** 2)))
@@ -772,6 +790,7 @@ def run_validation(
             "physical_trials": physical_trials,
             "physical_fit_parameters": physical_fit_parameters,
             "physical_fit_rmse": physical_fit_rmse,
+            "validation_target": "Raw physical g2 (all trials)",
             "mae": proposed_mae,
             "rmse": proposed_rmse,
             "max_error": proposed_max_error,
