@@ -36,6 +36,8 @@ from parameters import (
 # CONSTANTS
 # ============================================================
 
+VOXEL_SIZE_MM = 0.5
+
 # Convert wavelength from nm to mm
 WAVELENGTH_MM = (
     WAVELENGTH_NM
@@ -90,8 +92,8 @@ def extract_photon_data(detp):
         .astype(int)
     )
 
-    path_shallow = detp[1]
-    path_deep = detp[2]
+    path_shallow = detp[1] * VOXEL_SIZE_MM
+    path_deep = detp[2] * VOXEL_SIZE_MM
 
     momentum_shallow = detp[3]
     momentum_deep = detp[4]
